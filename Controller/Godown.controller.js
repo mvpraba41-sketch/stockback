@@ -190,8 +190,8 @@ exports.addStockToGodown = async (req, res) => {
     `);
 
     await client.query(
-      'INSERT INTO public.stock_history (stock_id, action, cases, per_case_total) VALUES ($1, $2, $3, $4)',
-      [stockId, 'added', casesAddedNum, casesAddedNum * per_case]
+      'INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, added_by) VALUES ($1, $2, $3, $4, $5)',
+      [stockId, 'added', casesAddedNum, casesAddedNum * per_case, req.body.added_by || 'Unknown']
     );
 
     await client.query('COMMIT');
@@ -564,9 +564,9 @@ exports.bulkAllocate = async (req, res) => {
 
       // --- History ---
       await client.query(
-        `INSERT INTO public.stock_history (stock_id, action, cases, per_case_total)
-         VALUES ($1, 'added', $2, $3)`,
-        [stockId, cases, cases * per_case]
+        `INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, added_by)
+        VALUES ($1, 'added', $2, $3, $4)`,
+        [stockId, cases, cases * per_case, alloc.added_by || 'Unknown']
       );
 
       results.push({ godown_id, productname, brand, cases_added: cases });

@@ -13,8 +13,17 @@ const pool = new Pool({
 exports.addProduct = async (req, res) => {
   try {
     const { productname, price, per_case, brand, product_type } = req.body;
-    if (!productname || !price || !per_case || !brand || !product_type)
+
+    // Fixed validation - allow 0 for price and per_case
+    if (
+      !productname || typeof productname !== 'string' || productname.trim() === '' ||
+      price == null ||
+      per_case == null ||
+      !brand || typeof brand !== 'string' || brand.trim() === '' ||
+      !product_type || typeof product_type !== 'string' || product_type.trim() === ''
+    ) {
       return res.status(400).json({ message: 'All required fields must be provided' });
+    }
 
     const tableName = product_type.toLowerCase().replace(/\s+/g, '_');
 
@@ -44,7 +53,7 @@ exports.addProduct = async (req, res) => {
 
     const result = await pool.query(
       `INSERT INTO public.${tableName} (productname, price, per_case, brand)
-       VALUES ($1,$2,$3,$4) RETURNING id`,
+       VALUES ($1, $2, $3, $4) RETURNING id`,
       [productname, parseFloat(price), parseInt(per_case, 10), brand]
     );
 
@@ -59,13 +68,21 @@ exports.updateProduct = async (req, res) => {
   try {
     const { tableName, id } = req.params;
     const { productname, price, per_case, brand } = req.body;
-    if (!productname || !price || !per_case || !brand)
+
+    // Fixed validation - allow 0 for price and per_case
+    if (
+      !productname || typeof productname !== 'string' || productname.trim() === '' ||
+      price == null ||
+      per_case == null ||
+      !brand || typeof brand !== 'string' || brand.trim() === ''
+    ) {
       return res.status(400).json({ message: 'All required fields must be provided' });
+    }
 
     const result = await pool.query(
       `UPDATE public.${tableName}
-       SET productname=$1, price=$2, per_case=$3, brand=$4
-       WHERE id=$5 RETURNING id`,
+       SET productname = $1, price = $2, per_case = $3, brand = $4
+       WHERE id = $5 RETURNING id`,
       [productname, parseFloat(price), parseInt(per_case, 10), brand, id]
     );
 
@@ -154,6 +171,75 @@ exports.getProductTypes = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch product types' });
   }
 };
+
+exports.updateProductType = async (req, res) => {
+  try {
+    const { oldType } = req.params;
+    const { product_type: newTypeRaw } = req.body;
+
+    if (!newTypeRaw?.trim()) {
+      return res.status(400).json({ message: 'New product type name is required' });
+    }
+
+    const newType = newTypeRaw.trim().toLowerCase().replace(/\s+/g, '_');
+    if (newType === oldType) {
+      return res.status(400).json({ message: 'New name is the same as old name' });
+    }
+
+    const conflict = await pool.query(
+      'SELECT 1 FROM public.products WHERE product_type = $1',
+      [newType]
+    );
+    if (conflict.rows.length) {
+      return res.status(400).json({ message: 'This product type name already exists' });
+    }
+
+    const updateMeta = await pool.query(
+      'UPDATE public.products SET product_type = $1 WHERE product_type = $2 RETURNING product_type',
+      [newType, oldType]
+    );
+
+    if (!updateMeta.rowCount) {
+      return res.status(404).json({ message: 'Product type not found' });
+    }
+
+    const oldTable = oldType;
+    const newTable = newType;
+
+    await pool.query(`ALTER TABLE public.${oldTable} RENAME TO ${newTable}`);
+
+    res.json({ message: 'Product type renamed successfully', newType });
+  } catch (err) {
+    console.error(err);
+    if (err.code === '42P07') {
+      res.status(400).json({ message: 'Target table name already exists' });
+    } else {
+      res.status(500).json({ message: 'Failed to rename product type' });
+    }
+  }
+};
+
+exports.deleteProductType = async (req, res) => {
+  try {
+    const { productType } = req.params;
+    const tableName = productType.toLowerCase().replace(/\s+/g, '_');
+
+    const countRes = await pool.query(`SELECT COUNT(*) FROM public.${tableName}`);
+    const productCount = parseInt(countRes.rows[0].count, 10);
+
+    await pool.query(`DROP TABLE IF EXISTS public.${tableName}`);
+
+    await pool.query('DELETE FROM public.products WHERE product_type = $1', [productType]);
+
+    res.json({
+      message: `Product type "${productType}" and ${productCount} product(s) deleted`,
+      deletedProducts: productCount
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to delete product type' });
+  }
+}
 
 /* ──────────────────────  BRAND (with agent_name)  ────────────────────── */
 exports.addBrand = async (req, res) => {

@@ -5,7 +5,7 @@ const {
   addProduct, getProducts, addProductType, getProductTypes,
   updateProduct, deleteProduct,
   addBrand, getBrands, updateBrand, deleteBrand,
-  getProductsByType
+  getProductsByType, updateProductType, deleteProductType
 } = require('../Controller/Inventory.controller');
 
 router.post('/products', addProduct);
@@ -16,6 +16,8 @@ router.delete('/products/:tableName/:id', deleteProduct);
 
 router.post('/product-types', addProductType);
 router.get('/product-types', getProductTypes);
+router.put('/product-types/:oldType', updateProductType);
+router.delete('/product-types/:productType', deleteProductType);
 
 router.post('/brands', addBrand);
 router.get('/brands', getBrands);

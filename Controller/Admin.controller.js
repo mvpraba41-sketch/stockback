@@ -67,6 +67,51 @@ const registerUser = async (req, res) => {
   }
 };
 
+// Add this function
+const changePassword = async (req, res) => {
+  const { username, newPassword } = req.body;
+
+  if (!username || !newPassword) {
+    return res.status(400).json({ error: 'Username and new password are required' });
+  }
+
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters' });
+  }
+
+  try {
+    const result = await pool.query(
+      'UPDATE public.user SET password = $1 WHERE username = $2 RETURNING username',
+      [newPassword, username]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json({ message: 'Password updated successfully' });
+  } catch (error) {
+    console.error('Change password error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// Also add endpoint to get list of users (for admin dropdown)
+const getAllUsers = async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT username, type FROM public.user ORDER BY username'
+    );
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Get users error:', error);
+    res.status(500).json({ error: 'Failed to fetch users' });
+  }
+};
+
 module.exports = {
-  loginUser,registerUser
+  loginUser,
+  registerUser,
+  changePassword,
+  getAllUsers,
 };

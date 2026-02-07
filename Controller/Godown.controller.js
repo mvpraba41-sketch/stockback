@@ -586,3 +586,51 @@ exports.bulkAllocate = async (req, res) => {
     client.release();
   }
 };
+
+// DELETE /api/godowns/:godown_id/stock/:stock_id
+exports.deleteStockEntry = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { godown_id, stock_id } = req.params;
+
+    await client.query('BEGIN');
+
+    // 1. Verify the stock belongs to this godown
+    const ownershipCheck = await client.query(
+      'SELECT id FROM public.stock WHERE id = $1 AND godown_id = $2',
+      [stock_id, godown_id]
+    );
+
+    if (ownershipCheck.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ message: 'Stock does not belong to this godown or does not exist' });
+    }
+
+    // 2. Delete history first (due to foreign key)
+    await client.query(
+      'DELETE FROM public.stock_history WHERE stock_id = $1',
+      [stock_id]
+    );
+
+    // 3. Delete the stock entry
+    const deleteResult = await client.query(
+      'DELETE FROM public.stock WHERE id = $1 RETURNING id',
+      [stock_id]
+    );
+
+    if (deleteResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Stock entry not found' });
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Stock entry and its history deleted successfully' });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error in deleteStockEntry:', err.message);
+    res.status(500).json({ message: 'Failed to delete stock entry', error: err.message });
+  } finally {
+    client.release();
+  }
+};

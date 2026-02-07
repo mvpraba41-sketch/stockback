@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const ExcelJS = require('exceljs');
+
 const pool = new Pool({
   user: process.env.PGUSER,
   password: process.env.PGPASSWORD,
@@ -7,6 +8,7 @@ const pool = new Pool({
   port: process.env.PGPORT,
   database: process.env.PGDATABASE,
 });
+
 exports.addGodown = async (req, res) => {
   try {
     const { name } = req.body;
@@ -33,6 +35,7 @@ exports.addGodown = async (req, res) => {
     res.status(500).json({ message: 'Failed to create godown' });
   }
 };
+
 exports.getGodowns = async (req, res) => {
   try {
     const godownsResult = await pool.query('SELECT id, name FROM public.godown ORDER BY name');
@@ -64,6 +67,7 @@ exports.getGodowns = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch godowns' });
   }
 };
+
 exports.deleteGodown = async (req, res) => {
   try {
     const { id } = req.params;
@@ -77,12 +81,14 @@ exports.deleteGodown = async (req, res) => {
     res.status(500).json({ message: 'Failed to delete godown' });
   }
 };
+
 exports.addStockToGodown = async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    const { godown_id, product_type, productname, brand, cases_added } = req.body;
+    const { godown_id, product_type, productname, brand, cases_added, added_date } = req.body;
+
     if (!godown_id || !product_type || !productname || !brand || !cases_added) {
       return res.status(400).json({ message: 'All fields are required' });
     }
@@ -159,25 +165,28 @@ exports.addStockToGodown = async (req, res) => {
       [godown_id, product_type, productname, brand]
     );
 
+    // Use added_date as string directly (YYYY-MM-DD) or null
+    const customDate = added_date || null;
+
     if (existingStock.rows.length > 0) {
       stockId = existingStock.rows[0].id;
       const newCases = existingStock.rows[0].current_cases + casesAddedNum;
 
       await client.query(
-        'UPDATE public.stock SET current_cases = $1, date_added = CURRENT_TIMESTAMP, brand_id = $2 WHERE id = $3',
-        [newCases, brand_id, stockId]
+        'UPDATE public.stock SET current_cases = $1, date_added = COALESCE($2, CURRENT_TIMESTAMP), brand_id = $3 WHERE id = $4',
+        [newCases, customDate, brand_id, stockId]
       );
     } else {
       const insertResult = await client.query(
         `INSERT INTO public.stock 
-         (godown_id, product_type, productname, brand, brand_id, current_cases, per_case) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-        [godown_id, product_type, productname, brand, brand_id, casesAddedNum, per_case]
+         (godown_id, product_type, productname, brand, brand_id, current_cases, per_case, date_added) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, CURRENT_TIMESTAMP)) RETURNING id`,
+        [godown_id, product_type, productname, brand, brand_id, casesAddedNum, per_case, customDate]
       );
       stockId = insertResult.rows[0].id;
     }
 
-    // Insert into history
+    // Insert into history (same approach)
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.stock_history (
         id BIGSERIAL PRIMARY KEY,
@@ -190,8 +199,8 @@ exports.addStockToGodown = async (req, res) => {
     `);
 
     await client.query(
-      'INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, added_by) VALUES ($1, $2, $3, $4, $5)',
-      [stockId, 'added', casesAddedNum, casesAddedNum * per_case, req.body.added_by || 'Unknown']
+      'INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, added_by, date) VALUES ($1, $2, $3, $4, $5, COALESCE($6, CURRENT_TIMESTAMP))',
+      [stockId, 'added', casesAddedNum, casesAddedNum * per_case, req.body.added_by || 'Unknown', customDate]
     );
 
     await client.query('COMMIT');
@@ -204,6 +213,7 @@ exports.addStockToGodown = async (req, res) => {
     client.release();
   }
 };
+
 exports.getStockByGodown = async (req, res) => {
   const { godown_id } = req.params;
 
@@ -255,7 +265,6 @@ exports.getStockByGodown = async (req, res) => {
 
     const result = await pool.query(finalQuery, params);
     res.json(result.rows);
-
   } catch (err) {
     console.error('getStockByGodown:', err.message);
     res.status(500).json({ message: 'Failed to fetch stock' });
@@ -272,35 +281,38 @@ exports.takeStockFromGodown = async (req, res) => {
     if (!cases_taken || parseInt(cases_taken) <= 0) {
       return res.status(400).json({ message: 'Valid cases to take is required' });
     }
-    // Start transaction
+
     await client.query('BEGIN');
-    // Check stock availability
+
     const stockCheck = await client.query(
       'SELECT current_cases, per_case, taken_cases FROM public.stock WHERE id = $1 FOR UPDATE',
       [stock_id]
     );
+
     if (stockCheck.rows.length === 0) {
       await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Stock entry not found' });
     }
+
     const { current_cases, per_case, taken_cases } = stockCheck.rows[0];
     if (parseInt(cases_taken) > current_cases) {
       await client.query('ROLLBACK');
       return res.status(400).json({ message: 'Insufficient stock' });
     }
+
     const newCases = current_cases - parseInt(cases_taken);
     const newTakenCases = (taken_cases || 0) + parseInt(cases_taken);
-    // Update stock
+
     await client.query(
       'UPDATE public.stock SET current_cases = $1, taken_cases = $2, last_taken_date = CURRENT_TIMESTAMP WHERE id = $3',
       [newCases, newTakenCases, stock_id]
     );
-    // Insert into stock history
+
     await client.query(
       'INSERT INTO public.stock_history (stock_id, action, cases, per_case_total) VALUES ($1, $2, $3, $4)',
       [stock_id, 'taken', parseInt(cases_taken), parseInt(cases_taken) * per_case]
     );
-    // Commit transaction
+
     await client.query('COMMIT');
     res.status(200).json({ message: 'Stock taken successfully', new_cases: newCases });
   } catch (err) {
@@ -311,6 +323,7 @@ exports.takeStockFromGodown = async (req, res) => {
     client.release();
   }
 };
+
 exports.addStockToExisting = async (req, res) => {
   try {
     const { stock_id, cases_added } = req.body;
@@ -320,29 +333,36 @@ exports.addStockToExisting = async (req, res) => {
     if (!cases_added || parseInt(cases_added) <= 0) {
       return res.status(400).json({ message: 'Valid cases to add is required' });
     }
+
     const stockCheck = await pool.query(
       'SELECT current_cases, per_case FROM public.stock WHERE id = $1',
       [stock_id]
     );
+
     if (stockCheck.rows.length === 0) {
       return res.status(404).json({ message: 'Stock entry not found' });
     }
+
     const { current_cases, per_case } = stockCheck.rows[0];
     const newCases = current_cases + parseInt(cases_added);
+
     await pool.query(
       'UPDATE public.stock SET current_cases = $1, date_added = CURRENT_TIMESTAMP WHERE id = $2',
       [newCases, stock_id]
     );
+
     await pool.query(
       'INSERT INTO public.stock_history (stock_id, action, cases, per_case_total) VALUES ($1, $2, $3, $4)',
       [stock_id, 'added', parseInt(cases_added), parseInt(cases_added) * per_case]
     );
+
     res.status(200).json({ message: 'Stock added successfully', new_cases: newCases });
   } catch (err) {
     console.error('Error in addStockToExisting:', err.message);
     res.status(500).json({ message: 'Failed to add stock' });
   }
 };
+
 exports.getStockHistory = async (req, res) => {
   try {
     const { stock_id } = req.params;
@@ -354,7 +374,7 @@ exports.getStockHistory = async (req, res) => {
           s.product_type,
           s.per_case * h.cases AS per_case_total,
           COALESCE(b.agent_name, '-') AS agent_name,
-          COALESCE(h.customer_name, '-') AS customer_name   -- from stock_history
+          COALESCE(h.customer_name, '-') AS customer_name
        FROM public.stock_history h
        JOIN public.stock s ON h.stock_id = s.id
        LEFT JOIN public.brand b ON s.brand = b.name
@@ -368,6 +388,7 @@ exports.getStockHistory = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch stock history' });
   }
 };
+
 exports.exportGodownStockToExcel = async (req, res) => {
   try {
     const godownsResult = await pool.query('SELECT id, name FROM public.godown ORDER BY name');
@@ -473,7 +494,6 @@ exports.editGodown = async (req, res) => {
   }
 };
 
-// FAST FETCH: Godowns + Stock Count (no full stock details)
 exports.getGodownsFast = async (req, res) => {
   try {
     const result = await pool.query(`
@@ -494,7 +514,6 @@ exports.getGodownsFast = async (req, res) => {
   }
 };
 
-// POST /api/godowns/bulk-allocate
 exports.bulkAllocate = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -514,13 +533,13 @@ exports.bulkAllocate = async (req, res) => {
         productname,
         brand,
         per_case,
-        cases_added
+        cases_added,
+        added_date
       } = alloc;
 
       const cases = parseInt(cases_added, 10);
       if (isNaN(cases) || cases <= 0) continue;
 
-      // --- Brand: Insert if not exists ---
       const fmtBrand = brand.toLowerCase().replace(/\s+/g, '_');
       let brandRes = await client.query(
         'SELECT id FROM public.brand WHERE name = $1',
@@ -534,7 +553,9 @@ exports.bulkAllocate = async (req, res) => {
       }
       const brand_id = brandRes.rows[0].id;
 
-      // --- Stock: Update or Insert ---
+      // Use added_date as string directly (YYYY-MM-DD) or null
+      const customDate = added_date || null;
+
       const exist = await client.query(
         `SELECT id, current_cases FROM public.stock 
          WHERE godown_id = $1 AND product_type = $2 AND productname = $3 AND brand = $4`,
@@ -547,26 +568,25 @@ exports.bulkAllocate = async (req, res) => {
         const newCases = exist.rows[0].current_cases + cases;
         await client.query(
           `UPDATE public.stock 
-           SET current_cases = $1, date_added = CURRENT_TIMESTAMP, brand_id = $2 
-           WHERE id = $3`,
-          [newCases, brand_id, stockId]
+           SET current_cases = $1, date_added = COALESCE($2, CURRENT_TIMESTAMP), brand_id = $3 
+           WHERE id = $4`,
+          [newCases, customDate, brand_id, stockId]
         );
       } else {
         const ins = await client.query(
           `INSERT INTO public.stock 
-           (godown_id, product_type, productname, brand, brand_id, current_cases, per_case)
-           VALUES ($1, $2, $3, $4, $5, $6, $7) 
+           (godown_id, product_type, productname, brand, brand_id, current_cases, per_case, date_added)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, CURRENT_TIMESTAMP)) 
            RETURNING id`,
-          [godown_id, product_type, productname, brand, brand_id, cases, per_case]
+          [godown_id, product_type, productname, brand, brand_id, cases, per_case, customDate]
         );
         stockId = ins.rows[0].id;
       }
 
-      // --- History ---
       await client.query(
-        `INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, added_by)
-        VALUES ($1, 'added', $2, $3, $4)`,
-        [stockId, cases, cases * per_case, alloc.added_by || 'Unknown']
+        `INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, added_by, date)
+         VALUES ($1, 'added', $2, $3, $4, COALESCE($5, CURRENT_TIMESTAMP))`,
+        [stockId, cases, cases * per_case, alloc.added_by || 'Unknown', customDate]
       );
 
       results.push({ godown_id, productname, brand, cases_added: cases });
@@ -587,7 +607,6 @@ exports.bulkAllocate = async (req, res) => {
   }
 };
 
-// DELETE /api/godowns/:godown_id/stock/:stock_id
 exports.deleteStockEntry = async (req, res) => {
   const client = await pool.connect();
   try {
@@ -595,7 +614,6 @@ exports.deleteStockEntry = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // 1. Verify the stock belongs to this godown
     const ownershipCheck = await client.query(
       'SELECT id FROM public.stock WHERE id = $1 AND godown_id = $2',
       [stock_id, godown_id]
@@ -606,13 +624,11 @@ exports.deleteStockEntry = async (req, res) => {
       return res.status(403).json({ message: 'Stock does not belong to this godown or does not exist' });
     }
 
-    // 2. Delete history first (due to foreign key)
     await client.query(
       'DELETE FROM public.stock_history WHERE stock_id = $1',
       [stock_id]
     );
 
-    // 3. Delete the stock entry
     const deleteResult = await client.query(
       'DELETE FROM public.stock WHERE id = $1 RETURNING id',
       [stock_id]
@@ -625,7 +641,6 @@ exports.deleteStockEntry = async (req, res) => {
 
     await client.query('COMMIT');
     res.status(200).json({ message: 'Stock entry and its history deleted successfully' });
-
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Error in deleteStockEntry:', err.message);

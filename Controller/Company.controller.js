@@ -36,7 +36,7 @@ exports.getAllCompanies = async (req, res) => {
     const result = await pool.query(`
       SELECT 
         id, company_name, address, gstin, email, mobile,
-        logo_url, signature_url,
+        logo_url, signature_url,tagline,
         bank_name, branch, account_no, ifsc_code,
         created_at, updated_at
       FROM public.company_details 
@@ -64,7 +64,8 @@ exports.getCompanyDetails = async (req, res) => {
         logo_url: '', signature_url: '',
         bank_name: 'Tamilnad Mercantile Bank Ltd.',
         branch: 'SIVAKASI',
-        account_no: '', ifsc_code: ''
+        account_no: '', ifsc_code: '',
+        tagline: 'Quality Products • Timely Delivery'
       });
     }
 
@@ -86,6 +87,7 @@ exports.createCompany = async (req, res) => {
       gstin = '', 
       email = '',
       mobile = '',  // ← Added mobile
+      tagline = '',
       bank_name = 'Tamilnad Mercantile Bank Ltd.',
       branch = 'SIVAKASI', 
       account_no = '', 
@@ -98,15 +100,16 @@ exports.createCompany = async (req, res) => {
     try {
       await pool.query(`
         INSERT INTO public.company_details
-          (company_name, address, gstin, email, mobile, logo_url, signature_url,
+          (company_name, address, gstin, email, mobile, tagline, logo_url, signature_url,
            bank_name, branch, account_no, ifsc_code)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       `, [
         company_name.trim(),
         address.trim(),
         gstin.trim().toUpperCase(),
         email.trim(),
         mobile.trim(),                 // ← $5
+        tagline.trim(),
         logo_url,                      // ← $6
         signature_url,                 // ← $7
         bank_name.trim(),              // ← $8
@@ -134,6 +137,7 @@ exports.updateCompany = async (req, res) => {
       gstin, 
       email,
       mobile = '',  // ← Added mobile with default
+      tagline = '',
       bank_name, 
       branch, 
       account_no, 
@@ -151,12 +155,13 @@ exports.updateCompany = async (req, res) => {
           gstin = $3, 
           email = $4,
           mobile = $5,
-          logo_url = COALESCE($6, logo_url),
-          signature_url = COALESCE($7, signature_url),
-          bank_name = $8, 
-          branch = $9, 
-          account_no = $10, 
-          ifsc_code = $11,
+          tagline = $6,
+          logo_url = COALESCE($7, logo_url),
+          signature_url = COALESCE($8, signature_url),
+          bank_name = $9, 
+          branch = $10, 
+          account_no = $11, 
+          ifsc_code = $12,
           updated_at = NOW()
         WHERE id = (SELECT id FROM public.company_details ORDER BY id DESC LIMIT 1)
       `, [
@@ -165,6 +170,7 @@ exports.updateCompany = async (req, res) => {
         gstin.trim().toUpperCase(),
         email.trim(),
         mobile.trim(),                 // ← $5
+        tagline?.trim(),
         logo_url,                      // ← $6
         signature_url,                 // ← $7
         bank_name.trim(),              // ← $8

@@ -1,4 +1,4 @@
-// controllers/dispatch.controller.js
+// controllers/wdispatch.controller.js
 const { Pool } = require('pg');
 
 const pool = new Pool({

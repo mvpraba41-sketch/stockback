@@ -10,7 +10,7 @@ const {
   takeStockFromGodown,
   getStockHistory,
   exportGodownStockToExcel,
-  addStockToExisting,editGodown,getGodownsFast,bulkAllocate,deleteStockEntry
+  addStockToExisting,editGodown,getGodownsFast,bulkAllocate,deleteStockEntry,transferStock
 } = require('../Controller/Godown.controller');
 
 router.post('/godowns', addGodown);
@@ -28,5 +28,8 @@ router.patch('/godowns/:id', editGodown);
 router.get('/godowns/fast', getGodownsFast);
 router.post('/godowns/bulk-allocate', bulkAllocate);
 router.delete('/godowns/:godown_id/stock/:stock_id', deleteStockEntry);
+router.post('/stock/transfer', transferStock);
+
+router.post('/godowns/:sourceGodownId/stock/:stockId/transfer', transferStock);
 
 module.exports = router;

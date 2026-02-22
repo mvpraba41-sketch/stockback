@@ -398,76 +398,114 @@ exports.exportGodownStockToExcel = async (req, res) => {
     workbook.lastModifiedBy = 'Admin System';
 
     for (const godown of godowns) {
-      const stockResult = await pool.query(
-        `SELECT
-            s.*,
-            g.name AS godown_name,
-            COALESCE(b.agent_name, '-') AS agent_name,
-            COALESCE(latest_taken.customer_name, '-') AS last_customer_name,
-            COALESCE(latest_taken.agent_name, '-') AS last_agent_name
-         FROM public.stock s
-         JOIN public.godown g ON s.godown_id = g.id
-         LEFT JOIN public.brand b ON s.brand = b.name
-         LEFT JOIN LATERAL (
-           SELECT h.customer_name, h.agent_name
-           FROM public.stock_history h
-           WHERE h.stock_id = s.id
-             AND h.action = 'taken'
-           ORDER BY h.date DESC
-           LIMIT 1
-         ) latest_taken ON TRUE
-         WHERE s.godown_id = $1
-         ORDER BY s.productname`,
-        [godown.id]
-      );
+      // ─── Only Full History Sheet ───────────────────────────────────────────────
+      const historyQuery = `
+        SELECT 
+          h.date,
+          h.action,
+          h.cases,
+          h.per_case_total,
+          h.added_by,
+          h.taken_by,
+          h.customer_name,
+          s.product_type,
+          s.productname,
+          s.brand,
+          COALESCE(b.agent_name, '-') AS agent_name
+        FROM public.stock_history h
+        JOIN public.stock s ON h.stock_id = s.id
+        LEFT JOIN public.brand b ON s.brand = b.name
+        WHERE s.godown_id = $1
+        ORDER BY h.date DESC
+      `;
+      const historyResult = await pool.query(historyQuery, [godown.id]);
 
-      const worksheet = workbook.addWorksheet(godown.name, { properties: { defaultColWidth: 15 } });
-      worksheet.columns = [
-        { header: 'Product Type', key: 'product_type', width: 20 },
-        { header: 'Product Name', key: 'productname', width: 30 },
-        { header: 'Brand', key: 'brand', width: 15 },
-        { header: 'Name', key: 'display_name', width: 22 },
-        { header: 'Current Cases', key: 'current_cases', width: 15 },
-        { header: 'Per Case', key: 'per_case', width: 10 },
-        { header: 'Taken Cases', key: 'taken_cases', width: 15 },
-        { header: 'Date Added', key: 'date_added', width: 20 },
-        { header: 'Last Taken Date', key: 'last_taken_date', width: 20 },
+      if (historyResult.rows.length === 0) continue; // skip empty godowns
+
+      const sheet = workbook.addWorksheet(`${godown.name} - History`, {
+        properties: { defaultColWidth: 20 }
+      });
+
+      sheet.columns = [
+        { header: 'S.No', key: 'sno', width: 8 },
+        { header: 'Date & Time', key: 'date', width: 24 },
+        { header: 'Action', key: 'action', width: 14 },
+        { header: 'Cases', key: 'cases', width: 12 },
+        { header: 'Total Qty', key: 'per_case_total', width: 14 },
+        { header: 'Product Type', key: 'product_type', width: 22 },
+        { header: 'Product Name', key: 'productname', width: 35 },
+        { header: 'Brand', key: 'brand', width: 18 },
+        { header: 'Agent Name', key: 'agent_name', width: 20 },
+        { header: 'Performed By', key: 'performed_by', width: 22 },
+        { header: 'Customer / Note', key: 'customer_name', width: 40 },
       ];
 
-      stockResult.rows.forEach(row => {
-        worksheet.addRow({
-          product_type: row.product_type,
-          productname: row.productname,
-          brand: row.brand,
-          display_name: row.last_customer_name !== '-' 
-            ? row.last_customer_name 
-            : row.last_agent_name,
-          current_cases: row.current_cases,
-          per_case: row.per_case,
-          taken_cases: row.taken_cases || 0,
-          date_added: row.date_added,
-          last_taken_date: row.last_taken_date || '',
+      historyResult.rows.forEach((row, index) => {
+        const formattedDate = row.date 
+          ? new Date(row.date).toLocaleString('en-IN', {
+              day: '2-digit', month: 'short', year: 'numeric',
+              hour: '2-digit', minute: '2-digit', hour12: true
+            })
+          : '-';
+
+        // Performed By: prioritize taken_by for OUT, added_by for IN
+        let performedBy = '-';
+        if (row.action === 'added') {
+          performedBy = row.added_by || row.taken_by || '-';
+        } else if (row.action === 'taken') {
+          performedBy = row.taken_by || row.added_by || '-';
+        }
+
+        sheet.addRow({
+          sno: index + 1,
+          date: formattedDate,
+          action: row.action === 'added' ? 'IN (Added)' : 'OUT (Taken)',
+          cases: row.action === 'added' ? `+${row.cases}` : `-${row.cases}`,
+          per_case_total: row.per_case_total || 0,
+          product_type: row.product_type || '',
+          productname: row.productname || '',
+          brand: row.brand || '',
+          agent_name: row.agent_name || '-',
+          performed_by: performedBy,
+          customer_name: row.customer_name || '-',
         });
       });
 
-      worksheet.getRow(1).font = { bold: true };
-      worksheet.getRow(1).fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFCCCCCC' },
-      };
+      // Header style
+      sheet.getRow(1).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E88E5' } };
+
+      // Row coloring: green for IN, light red for OUT
+      sheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        const action = row.getCell('action').value;
+        if (action?.includes('IN')) {
+          row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+        } else if (action?.includes('OUT')) {
+          row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEF9A9A' } };
+        }
+      });
     }
 
+    // If no godowns had history → add a message sheet
+    if (workbook.worksheets.length === 0) {
+      const sheet = workbook.addWorksheet('No History');
+      sheet.getCell('A1').value = 'No stock history found in any godown.';
+      sheet.getCell('A1').font = { size: 14, bold: true };
+    }
+
+    // Send the file
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
-    res.setHeader('Content-Disposition', 'attachment; filename=godown_stocks.xlsx');
+    res.setHeader('Content-Disposition', 'attachment; filename=godown_history_report.xlsx');
     await workbook.xlsx.write(res);
     res.end();
+
   } catch (err) {
-    console.error('Error in exportGodownStockToExcel:', err.message);
-    res.status(500).json({ message: 'Failed to export Excel' });
+    console.error('Error in exportGodownStockToExcel:', err.message, err.stack);
+    res.status(500).json({ message: 'Failed to export Excel', error: err.message });
   }
 };
 
@@ -645,6 +683,162 @@ exports.deleteStockEntry = async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Error in deleteStockEntry:', err.message);
     res.status(500).json({ message: 'Failed to delete stock entry', error: err.message });
+  } finally {
+    client.release();
+  }
+};
+
+exports.transferStock = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { source_stock_id, target_godown_id, cases_transferred, transfer_date, added_by } = req.body;
+
+    if (!source_stock_id || !target_godown_id || !cases_transferred || parseInt(cases_transferred) <= 0) {
+      return res.status(400).json({ message: 'Invalid input' });
+    }
+
+    if (!added_by) {
+      return res.status(400).json({ message: 'Added by (username) is required' });
+    }
+
+    await client.query('BEGIN');
+
+    // ─── Get source stock ───────────────────────────────────────────────
+    const sourceStockRes = await client.query(
+      `SELECT s.*, g.name as godown_name
+       FROM public.stock s
+       JOIN public.godown g ON s.godown_id = g.id
+       WHERE s.id = $1 FOR UPDATE`,
+      [source_stock_id]
+    );
+
+    if (sourceStockRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Source stock not found' });
+    }
+
+    const source = sourceStockRes.rows[0];
+
+    if (parseInt(cases_transferred) > source.current_cases) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Insufficient cases' });
+    }
+
+    const newCurrent = source.current_cases - parseInt(cases_transferred);
+    const newTaken = (source.taken_cases || 0) + parseInt(cases_transferred);
+    const customDate = transfer_date || null;
+
+    // Update source stock
+    await client.query(
+      `UPDATE public.stock 
+       SET current_cases = $1, taken_cases = $2, last_taken_date = COALESCE($3, CURRENT_TIMESTAMP)
+       WHERE id = $4`,
+      [newCurrent, newTaken, customDate, source_stock_id]
+    );
+
+    // Get target godown name
+    const targetGodownRes = await client.query(
+      'SELECT name FROM public.godown WHERE id = $1',
+      [target_godown_id]
+    );
+
+    if (targetGodownRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Target godown not found' });
+    }
+
+    const targetName = targetGodownRes.rows[0].name;
+    const perCaseTotal = parseInt(cases_transferred) * source.per_case;
+
+    // ─── History for SOURCE (taken) ─────────────────────────────────────
+    await client.query(
+      `INSERT INTO public.stock_history 
+       (stock_id, action, cases, per_case_total, added_by, customer_name, date)
+       VALUES ($1, 'taken', $2, $3, $4, $5, COALESCE($6, CURRENT_TIMESTAMP))`,
+      [
+        source_stock_id,
+        parseInt(cases_transferred),
+        perCaseTotal,
+        added_by,                                 // who did the transfer
+        `TRANSFERRED TO ${targetName.replace(/_/g, ' ').toUpperCase()}`,
+        customDate
+      ]
+    );
+
+    // ─── Target stock logic ─────────────────────────────────────────────
+    const existingTarget = await client.query(
+      `SELECT id, current_cases FROM public.stock 
+       WHERE godown_id = $1 AND product_type = $2 AND productname = $3 AND brand = $4`,
+      [target_godown_id, source.product_type, source.productname, source.brand]
+    );
+
+    let targetStockId;
+
+    if (existingTarget.rows.length > 0) {
+      targetStockId = existingTarget.rows[0].id;
+      const newTargetCurrent = existingTarget.rows[0].current_cases + parseInt(cases_transferred);
+
+      await client.query(
+        `UPDATE public.stock 
+         SET current_cases = $1, date_added = COALESCE($2, CURRENT_TIMESTAMP)
+         WHERE id = $3`,
+        [newTargetCurrent, customDate, targetStockId]
+      );
+    } else {
+      const formattedBrand = source.brand.toLowerCase().replace(/\s+/g, '_');
+      let brandRes = await client.query('SELECT id FROM public.brand WHERE name = $1', [formattedBrand]);
+
+      if (brandRes.rows.length === 0) {
+        brandRes = await client.query(
+          'INSERT INTO public.brand (name) VALUES ($1) RETURNING id',
+          [formattedBrand]
+        );
+      }
+
+      const brandId = brandRes.rows[0].id;
+
+      const insertRes = await client.query(
+        `INSERT INTO public.stock 
+         (godown_id, product_type, productname, brand, brand_id, current_cases, per_case, date_added)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, CURRENT_TIMESTAMP))
+         RETURNING id`,
+        [
+          target_godown_id,
+          source.product_type,
+          source.productname,
+          source.brand,
+          brandId,
+          parseInt(cases_transferred),
+          source.per_case,
+          customDate
+        ]
+      );
+
+      targetStockId = insertRes.rows[0].id;
+    }
+
+    // ─── History for TARGET (added) ─────────────────────────────────────
+    const sourceName = source.godown_name;
+
+    await client.query(
+      `INSERT INTO public.stock_history 
+       (stock_id, action, cases, per_case_total, added_by, date)
+       VALUES ($1, 'added', $2, $3, $4, COALESCE($5, CURRENT_TIMESTAMP))`,
+      [
+        targetStockId,
+        parseInt(cases_transferred),
+        perCaseTotal,
+        `TRANSFERRED FROM ← ${sourceName.replace(/_/g, ' ').toUpperCase()} by ${added_by}`,
+        customDate
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Transfer successful' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('Error in transferStock:', err.message);
+    res.status(500).json({ message: 'Failed to transfer', error: err.message });
   } finally {
     client.release();
   }

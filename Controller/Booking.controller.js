@@ -38,17 +38,24 @@ const formatDate = (dateInput) => {
   return `${d}/${m}/${y}`;
 };
 
-// Dynamic PDF Generator - Pure In-Memory
 const generatePDFBuffer = (data) => {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 40, size: 'A4' });
     const chunks = [];
-
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    // SAFE DEFAULTS
+    // ─── DEBUG LOG ───────────────────────────────────────────────
+    console.log('[PDF GENERATOR DEBUG] Received items:', 
+      JSON.stringify(data.items?.map(i => ({
+        name: i.productname,
+        per_case: i.per_case,
+        rate_per_box: i.rate_per_box,
+        amount: i.amount
+      })) || 'NO ITEMS', null, 2));
+    // ──────────────────────────────────────────────────────────────
+
     const safeNum = (val) => (parseFloat(val) || 0).toFixed(2);
     const safeStr = (val) => (val || '').toString();
 
@@ -75,7 +82,6 @@ const generatePDFBuffer = (data) => {
     const grandTotal = parseFloat(data.grandTotal) || 0;
     const totalCases = parseInt(data.totalCases) || 0;
 
-    // === TITLE ===
     doc.fontSize(16).font('Helvetica-Bold').text('ESTIMATE', { align: 'center' }).moveDown(1.5);
 
     const leftX = 50;
@@ -85,33 +91,28 @@ const generatePDFBuffer = (data) => {
     const colWidths = [35, 130, 45, 45, 55, 65, 65, 50];
     const rowHeight = 20;
     const cellPadding = 4;
-
     const startY = 100;
 
-    // Customer Info
     doc.font('Helvetica-Bold').fontSize(15).text('Customer Information', leftX, startY);
     doc.font('Helvetica').fontSize(12);
     doc.text(`Party Name : ${customer_name}`, leftX, startY + 17);
-    doc.text(`Address    : ${address}`, leftX, startY + 32);
-    doc.text(`GSTIN      : ${gstin}`, leftX, startY + 52);
+    doc.text(`Address : ${address}`, leftX, startY + 32);
+    doc.text(`GSTIN : ${gstin}`, leftX, startY + 52);
 
-    // Bill Details
     doc.font('Helvetica-Bold').fontSize(15).text('Bill Details', rightX, startY, { align: 'right' });
     doc.font('Helvetica').fontSize(12);
-    doc.text(`Bill NO     : ${bill_number}`, rightX, startY + 17, { align: 'right' });
-    doc.text(`Bill DATE   : ${formatDate(bill_date)}`, rightX, startY + 32, { align: 'right' });
+    doc.text(`Bill NO : ${bill_number}`, rightX, startY + 17, { align: 'right' });
+    doc.text(`Bill DATE : ${formatDate(bill_date)}`, rightX, startY + 32, { align: 'right' });
     doc.text(`Agent Name : ${agent_name}`, rightX, startY + 47, { align: 'right' });
     doc.text(`L.R. NUMBER : ${lr_number}`, rightX, startY + 62, { align: 'right' });
     doc.font('Helvetica-Bold').fontSize(15).text(`No. of Cases : ${totalCases}`, rightX, startY + 77, { align: 'right' });
 
-    // TABLE
     let y = startY + 105;
     const headers = ['S.No', 'Product', 'Case', 'Per', 'Qty', 'Rate', 'Amount', 'From'];
     const verticalLines = [tableStartX];
     colWidths.forEach(w => verticalLines.push(verticalLines[verticalLines.length - 1] + w));
     let x = tableStartX;
 
-    // Header
     const headerTop = y;
     const headerBottom = y + rowHeight;
     doc.lineWidth(0.8).strokeColor('black');
@@ -127,25 +128,27 @@ const generatePDFBuffer = (data) => {
       });
       x += colWidths[i];
     });
+
     y += rowHeight + 1;
 
-    // Rows
     doc.font('Helvetica').fontSize(9);
     items.forEach((item) => {
       x = tableStartX;
       const rate = parseFloat(item.rate_per_box) || 0;
       const amount = parseFloat(item.amount) || 0;
 
+      // ─── IMPORTANT: EXACT COLUMN ORDER ─────────────────────────────
       const row = [
-        (item.s_no || '').toString(),
-        item.productname || '',
-        (item.cases || 0).toString(),
-        (item.per_case || 1).toString(),
-        (item.quantity || 0).toString(),
-        rate.toFixed(2),
-        amount.toFixed(2),
-        item.godown || from
+        (item.s_no || '').toString(),           // S.No
+        item.productname || '',                 // Product
+        (item.cases || 0).toString(),           // Case
+        (item.per_case || 1).toString(),        // Per
+        (item.quantity || 0).toString(),        // Qty
+        rate.toFixed(2),                        // Rate ← MUST be rate_per_box
+        amount.toFixed(2),                      // Amount
+        item.godown || from                     // From
       ];
+      // ──────────────────────────────────────────────────────────────
 
       const rowTop = y;
       const rowBottom = y + rowHeight;
@@ -161,20 +164,19 @@ const generatePDFBuffer = (data) => {
         });
         x += colWidths[i];
       });
+
       y += rowHeight + 1;
     });
 
-    // Bottom border
     doc.lineWidth(0.8).moveTo(tableStartX, y - 1).lineTo(tableStartX + tableWidth, y - 1).stroke();
 
-    // TOTALS
     y += 15;
     const transportStartY = y;
     doc.font('Helvetica-Bold').fontSize(15).text('Transport Details', leftX, transportStartY);
     doc.font('Helvetica').fontSize(10);
-    doc.text(`From         : ${from}`, leftX, transportStartY + 15);
-    doc.text(`To           : ${to}`, leftX, transportStartY + 30);
-    doc.text(`Through      : ${through}`, leftX, transportStartY + 45);
+    doc.text(`From : ${from}`, leftX, transportStartY + 15);
+    doc.text(`To : ${to}`, leftX, transportStartY + 30);
+    doc.text(`Through : ${through}`, leftX, transportStartY + 45);
 
     const totals = [
       ['GOODS VALUE', subtotal],
@@ -194,7 +196,6 @@ const generatePDFBuffer = (data) => {
     const labelX = rightX;
     const valueX = rightX + 110;
     const valueWidth = 70;
-
     doc.font('Helvetica').fontSize(10);
     totals.forEach(([label, value]) => {
       if (!label) return;
@@ -211,7 +212,6 @@ const generatePDFBuffer = (data) => {
        .text('NET AMOUNT', labelX, netY)
        .text(`${grandTotal.toFixed(2)}`, valueX, netY, { width: valueWidth, align: 'right' });
 
-    // FOOTER
     const footerY = Math.max(y, ty) + 50;
     doc.fontSize(10).font('Helvetica')
        .text('Note:', leftX, footerY)
@@ -244,16 +244,55 @@ exports.createBooking = async (req, res) => {
       apply_sgst = false,
       apply_igst = false,
       from_challan = false,
+      challan_id,
       is_direct_bill = false,
+      performed_by,   // ← NEW: username sent from frontend
     } = req.body;
 
     if (!customer_name || !items.length || !toLoc || !through) {
       return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
-    const shouldDeductStock = is_direct_bill === true && !from_challan;
-
     await client.query('BEGIN');
+
+    let finalItems = items;
+    let finalCustomerName = customer_name;
+    let finalAddress = address || '';
+    let finalGstin = gstin || '';
+    let finalLrNumber = lr_number || '';
+    let finalFrom = fromLoc;
+    let finalTo = toLoc;
+    let finalThrough = through;
+
+    // If from challan: load base data from delivery, override with payload
+    if (from_challan && challan_id) {
+      const challanRes = await client.query(
+        `SELECT * FROM delivery WHERE id = $1 AND converted_to_bill = FALSE`,
+        [challan_id]
+      );
+
+      if (challanRes.rows.length === 0) {
+        throw new Error('Challan not found or already converted');
+      }
+
+      const challan = challanRes.rows[0];
+
+      finalCustomerName = customer_name || challan.customer_name || '';
+      finalAddress = address || challan.address || '';
+      finalGstin = gstin || challan.gstin || '';
+      finalLrNumber = lr_number || challan.lr_number || '';
+      finalFrom = fromLoc || challan.from || 'SIVAKASI';
+      finalTo = toLoc || challan.to || '';
+      finalThrough = through || challan.through || '';
+
+      finalItems = items.length > 0 ? items : (typeof challan.items === 'string' ? JSON.parse(challan.items) : challan.items || []);
+
+      await client.query('UPDATE delivery SET converted_to_bill = TRUE WHERE id = $1', [challan_id]);
+    }
+
+    if (finalItems.length === 0) {
+      throw new Error('No items available');
+    }
 
     const sequenceNumber = await getNextSequenceNumber();
     const bill_number = `BILL-${sequenceNumber}`;
@@ -263,7 +302,7 @@ exports.createBooking = async (req, res) => {
     let totalCases = 0;
     const processedItems = [];
 
-    for (const [idx, item] of items.entries()) {
+    for (const [idx, item] of finalItems.entries()) {
       const {
         id: stock_id,
         productname,
@@ -275,11 +314,12 @@ exports.createBooking = async (req, res) => {
         rate_per_box,
       } = item;
 
-      if (!stock_id || !productname || !cases || !per_case || rate_per_box === undefined) {
+      if (!productname || !cases || !per_case || rate_per_box === undefined) {
         throw new Error(`Invalid item at index ${idx}`);
       }
 
-      if (shouldDeductStock) {
+      // Deduct stock only for direct bills (not from challan — already deducted)
+      if (!from_challan) {
         const stockRes = await client.query(
           'SELECT current_cases FROM public.stock WHERE id = $1 FOR UPDATE',
           [stock_id]
@@ -287,85 +327,100 @@ exports.createBooking = async (req, res) => {
         if (stockRes.rows.length === 0 || cases > stockRes.rows[0].current_cases) {
           throw new Error(`Insufficient stock for ${productname}`);
         }
-
         await client.query(
           'UPDATE public.stock SET current_cases = current_cases - $1, taken_cases = taken_cases + $1 WHERE id = $2',
           [cases, stock_id]
         );
+
+        // ─── RECORD WHO TOOK THE STOCK ───────────────────────────────────────
+        await client.query(
+          `INSERT INTO public.stock_history 
+             (stock_id, action, cases, per_case_total, date, customer_name, taken_by)
+           VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6)`,
+          [
+            stock_id,
+            'taken',
+            cases,
+            cases * (per_case || 1),
+            finalCustomerName || 'Walk-in',
+            performed_by || 'Unknown'   // ← username from frontend (or fallback)
+          ]
+        );
+        // ──────────────────────────────────────────────────────────────────────
       }
 
-      const qty = cases * per_case;
-      const amountBefore = qty * rate_per_box;
-      const discountAmt = amountBefore * (discount_percent / 100);
+      const qty = Number(cases) * Number(per_case);
+      const amountBefore = qty * Number(rate_per_box);
+      const discountAmt = amountBefore * (Number(discount_percent) / 100);
       const finalAmt = amountBefore - discountAmt;
 
       subtotal += finalAmt;
-      totalCases += cases;
+      totalCases += Number(cases);
 
       processedItems.push({
         s_no: idx + 1,
-        productname,
-        brand: brand || '',
+        productname: productname.trim(),
+        brand: brand?.trim() || '',
         cases: Number(cases),
         per_case: Number(per_case),
         quantity: qty,
-        rate_per_box: parseFloat(rate_per_box),
-        discount_percent: parseFloat(discount_percent),
-        amount: parseFloat(finalAmt.toFixed(2)),
-        godown: godown || stock_from || fromLoc,
+        rate_per_box: Number(rate_per_box),
+        discount_percent: Number(discount_percent),
+        amount: Number(finalAmt.toFixed(2)),
+        godown: godown?.trim() || stock_from || finalFrom,
       });
     }
 
     const packingCharges = apply_processing_fee ? subtotal * (packing_percent / 100) : 0;
-    const extraTaxable = taxable_value ? parseFloat(taxable_value) : 0;
+    const extraTaxable = taxable_value ? Number(taxable_value) : 0;
     const taxableAmount = subtotal + packingCharges + extraTaxable;
-    const discountAmt = taxableAmount * (additional_discount / 100);
-    const netTaxable = taxableAmount - discountAmt;
+    const discountAmtTotal = taxableAmount * (additional_discount / 100);
+    const netTaxable = taxableAmount - discountAmtTotal;
 
     let cgst = 0, sgst = 0, igst = 0;
     if (apply_igst) igst = netTaxable * 0.18;
-    else if (apply_cgst && apply_sgst) { cgst = netTaxable * 0.09; sgst = netTaxable * 0.09; }
+    else if (apply_cgst && apply_sgst) {
+      cgst = netTaxable * 0.09;
+      sgst = netTaxable * 0.09;
+    }
 
     const totalTax = cgst + sgst + igst;
     const grandTotal = Math.round(netTaxable + totalTax);
     const roundOff = grandTotal - (netTaxable + totalTax);
 
-    // Save booking (no pdf_path)
     await client.query(
       `INSERT INTO public.bookings (
         bill_number, bill_date, customer_name, address, gstin, lr_number, agent_name,
         "from", "to", "through", stock_from, items, total, extra_charges, from_challan
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [
-        bill_number, bill_date, customer_name, address || '', gstin || '', lr_number || '',
-        agent_name, fromLoc, toLoc, through, stock_from || fromLoc,
+        bill_number, bill_date, finalCustomerName, finalAddress, finalGstin, finalLrNumber,
+        agent_name, finalFrom, finalTo, finalThrough, stock_from || finalFrom,
         JSON.stringify(processedItems), grandTotal,
         JSON.stringify({
           packing_percent, additional_discount, taxable_value: extraTaxable,
-          apply_processing_fee, apply_cgst, apply_sgst, apply_igst,
-          is_direct_bill, from_challan
+          apply_processing_fee, apply_cgst, apply_sgst, apply_igst, is_direct_bill, from_challan
         }),
         from_challan
       ]
     );
 
-    // Generate PDF in memory
     const pdfBuffer = await generatePDFBuffer({
       bill_number,
       bill_date,
-      customer_name,
-      address,
-      gstin,
-      lr_number,
+      customer_name: finalCustomerName,
+      address: finalAddress,
+      gstin: finalGstin,
+      lr_number: finalLrNumber,
       agent_name,
-      from: fromLoc,
-      to: toLoc,
-      through,
+      from: finalFrom,
+      to: finalTo,
+      through: finalThrough,
       items: processedItems,
       subtotal,
       packingCharges,
       packing_percent,
-      addlDiscountAmt: discountAmt,
+      addlDiscountAmt: discountAmtTotal,
       extraTaxable,
       taxableAmount: netTaxable,
       cgstAmt: cgst,
@@ -386,105 +441,10 @@ exports.createBooking = async (req, res) => {
       grandTotal,
       pdfBase64: `data:application/pdf;base64,${pdfBase64}`
     });
-
   } catch (err) {
     await client.query('ROLLBACK');
+    console.error('Create Booking Error:', err.stack || err.message);
     res.status(500).json({ success: false, message: err.message || 'Failed to create bill' });
-  } finally {
-    client.release();
-  }
-};
-
-exports.convertChallanToBill = async (req, res) => {
-  const client = await pool.connect();
-  const { id } = req.params;
-
-  try {
-    await client.query('BEGIN');
-
-    const ch = await client.query(
-      `SELECT * FROM delivery WHERE id = $1 AND converted_to_bill = FALSE FOR UPDATE`,
-      [id]
-    );
-
-    if (ch.rows.length === 0) throw new Error('Challan not found or already converted');
-
-    const challan = ch.rows[0];
-    const items = Array.isArray(challan.items) ? challan.items : [];
-
-    const sequenceNumber = challan.challan_number.replace('DC-', '');
-    const bill_number = `BILL-${sequenceNumber}`;
-    const bill_date = new Date().toISOString().split('T')[0];
-
-    const processedItems = items.map((item, idx) => ({
-      s_no: idx + 1,
-      productname: item.productname || '',
-      brand: item.brand || '',
-      cases: Number(item.cases),
-      per_case: Number(item.per_case || 1),
-      quantity: Number(item.cases) * Number(item.per_case || 1),
-      rate_per_box: parseFloat(item.rate_per_box || 0),
-      discount_percent: 0,
-      amount: parseFloat((item.cases * (item.per_case || 1) * (item.rate_per_box || 0)).toFixed(2)),
-      godown: item.godown || challan.from || 'SIVAKASI',
-    }));
-
-    let subtotal = 0;
-    let totalCases = 0;
-    processedItems.forEach(i => { subtotal += i.amount; totalCases += i.cases; });
-    const grandTotal = Math.round(subtotal);
-
-    await client.query(
-      `INSERT INTO public.bookings (
-        bill_number, bill_date, customer_name, address, gstin, lr_number,
-        "from", "to", "through", items, from_challan, challan_number
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [
-        bill_number, bill_date, challan.customer_name, challan.address || '', challan.gstin || '',
-        challan.lr_number || '', challan.from || 'SIVAKASI', challan.to, challan.through || '',
-        JSON.stringify(processedItems), true, challan.challan_number
-      ]
-    );
-
-    await client.query('UPDATE delivery SET converted_to_bill = TRUE WHERE id = $1', [id]);
-
-    const pdfBuffer = await generatePDFBuffer({
-      bill_number,
-      bill_date,
-      customer_name: challan.customer_name,
-      address: challan.address || '',
-      gstin: challan.gstin || '',
-      lr_number: challan.lr_number || '',
-      agent_name: 'DIRECT',
-      from: challan.from || 'SIVAKASI',
-      to: challan.to,
-      through: challan.through || '',
-      items: processedItems,
-      subtotal,
-      packingCharges: 0,
-      packing_percent: 0,
-      addlDiscountAmt: 0,
-      extraTaxable: 0,
-      taxableAmount: subtotal,
-      cgstAmt: 0, sgstAmt: 0, igstAmt: 0,
-      roundOff: 0,
-      grandTotal,
-      totalCases,
-    });
-
-    const pdfBase64 = pdfBuffer.toString('base64');
-
-    await client.query('COMMIT');
-
-    res.json({
-      success: true,
-      bill_number,
-      pdfBase64: `data:application/pdf;base64,${pdfBase64}`
-    });
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    res.status(500).json({ success: false, message: err.message });
   } finally {
     client.release();
   }
@@ -862,7 +822,6 @@ exports.editBooking = async (req, res) => {
   }
 };
 
-// === DELETE BOOKING: Also log restock with customer_name (optional) ===
 exports.deleteBooking = async (req, res) => {
   const client = await pool.connect();
   const { id } = req.params;
@@ -871,130 +830,311 @@ exports.deleteBooking = async (req, res) => {
     await client.query('BEGIN');
 
     const bookingRes = await client.query(
-      'SELECT items, customer_name FROM public.bookings WHERE id = $1 FOR UPDATE',
+      'SELECT id, bill_number, items, customer_name FROM public.bookings WHERE id = $1 FOR UPDATE',
       [id]
     );
-    if (bookingRes.rows.length === 0) throw new Error('Booking not found');
 
-    const { items, customer_name } = bookingRes.rows[0];
-    const parsedItems = JSON.parse(items);
+    if (bookingRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Bill not found' });
+    }
 
-    // Restock each item
+    const booking = bookingRes.rows[0];
+    const billNumber = booking.bill_number || `ID-${id}`;
+    const customerName = booking.customer_name || 'DELETED';
+    const itemsRaw = booking.items;
+
+    let parsedItems = [];
+    let restockCount = 0;
+    let skippedCount = 0;
+
+    if (itemsRaw) {
+      try {
+        const parsed = typeof itemsRaw === 'string' ? JSON.parse(itemsRaw) : itemsRaw;
+        if (Array.isArray(parsed)) {
+          parsedItems = parsed;
+        }
+      } catch (e) {
+        console.error('Parse failed during delete:', e.message);
+      }
+    }
+
+    // Load godowns and create lookup map
+    const godownsRes = await client.query('SELECT id, name FROM public.godown');
+    const godownMap = {};
+    godownsRes.rows.forEach(g => {
+      godownMap[g.name.toUpperCase()] = g.id;
+      // Also support short codes / initials if you want
+    });
+
+    // Restock loop with history recording
     for (const item of parsedItems) {
-      const { id: stock_id, cases, per_case } = item;
-      if (!stock_id || !cases) continue;
+      let { godown, cases, productname, id: stock_id } = item;
 
+      if (!cases || cases <= 0 || !productname) {
+        skippedCount++;
+        continue;
+      }
+
+      godown = (godown || '').trim().toUpperCase();
+
+      // Try to find godown_id — prefer exact match, fallback to any containing
+      let godownId = godownMap[godown];
+      if (!godownId) {
+        const fallback = godownsRes.rows.find(g => g.name.toUpperCase().includes(godown));
+        godownId = fallback?.id;
+      }
+
+      if (!godownId) {
+        skippedCount++;
+        console.log(`No godown matched for: ${godown}`);
+        continue;
+      }
+
+      // Prefer exact stock_id if available from the booking items
+      let targetStockId = stock_id;
+
+      if (!targetStockId) {
+        // Fallback: loose match by product name
+        const stockRes = await client.query(
+          `SELECT id FROM public.stock 
+           WHERE godown_id = $1 AND productname ILIKE $2 
+           LIMIT 1`,
+          [godownId, `%${productname.split(' ')[0]}%`]
+        );
+        targetStockId = stockRes.rows[0]?.id;
+      }
+
+      if (!targetStockId) {
+        skippedCount++;
+        console.log(`No matching stock found for: ${productname} in godown ${godown}`);
+        continue;
+      }
+
+      // Restock
       await client.query(
-        'UPDATE public.stock SET current_cases = current_cases + $1, taken_cases = taken_cases - $1 WHERE id = $2',
-        [cases, stock_id]
+        `UPDATE public.stock 
+         SET current_cases = current_cases + $1,
+             taken_cases = GREATEST(taken_cases - $1, 0)
+         WHERE id = $2`,
+        [cases, targetStockId]
       );
+
+      // Record who returned the stock (deleted the bill)
       await client.query(
-        `INSERT INTO public.stock_history (stock_id, action, cases, per_case_total, date, customer_name) 
-         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5)`,
-        [stock_id, 'added', cases, cases * per_case, customer_name || 'DELETED']
+        `INSERT INTO public.stock_history 
+           (stock_id, action, cases, per_case_total, date, customer_name, added_by)
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6)`,
+        [
+          targetStockId,
+          'added',
+          cases,
+          cases * (item.per_case || 1),
+          customerName || 'DELETED BILL',
+          'System-Delete'   // or pass from req.body.performed_by if you add it
+        ]
       );
+
+      restockCount++;
     }
 
     await client.query('DELETE FROM public.bookings WHERE id = $1', [id]);
-
     await client.query('COMMIT');
-    res.json({ message: 'Booking deleted and stock restored' });
+
+    res.json({
+      success: true,
+      message: `Bill ${billNumber} deleted successfully`,
+      restocked: restockCount,
+      skipped: skippedCount,
+      details: restockCount > 0 ? 'Cases restored to stock' : 'No items could be restocked'
+    });
+
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Delete Booking Error:', err.message);
-    res.status(500).json({ message: err.message });
+    console.error('[DELETE BOOKING ERROR]', err.stack || err.message);
+    res.status(500).json({ success: false, message: err.message || 'Failed to delete booking' });
   } finally {
     client.release();
   }
 };
 
-exports.convertChallanToBill = async (req, res) => {
+exports.getBookingById = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(`
+      SELECT 
+        *
+      FROM public.bookings 
+      WHERE id = $1
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Bill not found' });
+    }
+
+    const booking = result.rows[0];
+
+    // Parse JSON fields safely
+    booking.items = typeof booking.items === 'string' ? JSON.parse(booking.items || '[]') : booking.items || [];
+    booking.extra_charges = typeof booking.extra_charges === 'string' ? JSON.parse(booking.extra_charges || '{}') : booking.extra_charges || {};
+
+    res.json(booking);
+  } catch (err) {
+    console.error('Get Booking By ID Error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.updateBooking = async (req, res) => {
   const client = await pool.connect();
   const { id } = req.params;
 
   try {
     await client.query('BEGIN');
 
-    const ch = await client.query(
-      `SELECT * FROM delivery 
-       WHERE id = $1 AND converted_to_bill = FALSE 
-       FOR UPDATE`,
-      [id]
-    );
+    // Reuse the same logic as create, but update instead of insert
+    const {
+      customer_name,
+      address,
+      gstin,
+      lr_number,
+      agent_name = 'DIRECT',
+      from: fromLoc = 'SIVAKASI',
+      to: toLoc,
+      through,
+      additional_discount = 0,
+      packing_percent = 3.0,
+      taxable_value,
+      stock_from,
+      items = [],
+      apply_processing_fee = false,
+      apply_cgst = false,
+      apply_sgst = false,
+      apply_igst = false,
+    } = req.body;
 
-    if (ch.rows.length === 0) {
-      throw new Error('Challan not found or already converted to bill');
+    if (!customer_name || !items.length || !toLoc || !through) {
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
-    const challan = ch.rows[0];
-    const items = Array.isArray(challan.items) ? challan.items : [];
+    let subtotal = 0;
+    let totalCases = 0;
+    const processedItems = [];
 
-    if (items.length === 0) {
-      throw new Error('No items in challan');
+    for (const [idx, item] of items.entries()) {
+      const {
+        id: stock_id,
+        productname,
+        brand,
+        cases,
+        per_case,
+        discount_percent = 0,
+        godown,
+        rate_per_box,
+      } = item;
+
+      if (!productname || !cases || !per_case || rate_per_box === undefined) {
+        throw new Error(`Invalid item at index ${idx}`);
+      }
+
+      const qty = Number(cases) * Number(per_case);
+      const amountBefore = qty * Number(rate_per_box);
+      const discountAmt = amountBefore * (Number(discount_percent) / 100);
+      const finalAmt = amountBefore - discountAmt;
+
+      subtotal += finalAmt;
+      totalCases += Number(cases);
+
+      processedItems.push({
+        s_no: idx + 1,
+        productname: productname.trim(),
+        brand: brand?.trim() || '',
+        cases: Number(cases),
+        per_case: Number(per_case),
+        quantity: qty,
+        rate_per_box: Number(rate_per_box),
+        discount_percent: Number(discount_percent),
+        amount: Number(finalAmt.toFixed(2)),
+        godown: godown?.trim() || stock_from || fromLoc,
+      });
     }
 
-    // Generate BILL number
-    const sequenceNumber = challan.challan_number.replace('DC-', ''); // e.g., "5"
-    const bill_number = `BILL-${sequenceNumber}`;
-    const bill_date = new Date().toISOString().split('T')[0];
+    const packingCharges = apply_processing_fee ? subtotal * (packing_percent / 100) : 0;
+    const extraTaxable = taxable_value ? Number(taxable_value) : 0;
+    const taxableAmount = subtotal + packingCharges + extraTaxable;
+    const discountAmtTotal = taxableAmount * (additional_discount / 100);
+    const netTaxable = taxableAmount - discountAmtTotal;
 
-    // Prepare items with serial no + amount
-    const itemsWithSerial = items.map((item, idx) => ({
-      s_no: idx + 1,
-      productname: item.productname || '',
-      brand: item.brand || '',
-      cases: Number(item.cases),
-      per_case: Number(item.per_case),
-      quantity: Number(item.cases) * Number(item.per_case),
-      rate_per_box: parseFloat(item.rate_per_box || 0),
-      discount_percent: 0,
-      amount: parseFloat((item.cases * item.per_case * (item.rate_per_box || 0)).toFixed(2)),
-      godown: item.godown || challan.from || 'SIVAKASI'
-    }));
+    let cgst = 0, sgst = 0, igst = 0;
+    if (apply_igst) igst = netTaxable * 0.18;
+    else if (apply_cgst && apply_sgst) {
+      cgst = netTaxable * 0.09;
+      sgst = netTaxable * 0.09;
+    }
 
-    // Insert into bookings
+    const totalTax = cgst + sgst + igst;
+    const grandTotal = Math.round(netTaxable + totalTax);
+    const roundOff = grandTotal - (netTaxable + totalTax);
+
     await client.query(
-      `INSERT INTO public.bookings (
-        bill_number, bill_date, customer_name, address, gstin, lr_number,
-        "from", "to", "through", items, from_challan, challan_number
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      `UPDATE public.bookings SET
+        customer_name = $1, address = $2, gstin = $3, lr_number = $4, agent_name = $5,
+        "from" = $6, "to" = $7, "through" = $8, stock_from = $9, items = $10,
+        total = $11, extra_charges = $12
+      WHERE id = $13`,
       [
-        bill_number,
-        bill_date,
-        challan.customer_name,
-        challan.address || '',
-        challan.gstin || '',
-        challan.lr_number || '',
-        challan.from || 'SIVAKASI',
-        challan.to,
-        challan.through || '',
-        JSON.stringify(itemsWithSerial),
-        true,
-        challan.challan_number
+        customer_name, address || '', gstin || '', lr_number || '',
+        agent_name, fromLoc, toLoc, through, stock_from || fromLoc,
+        JSON.stringify(processedItems), grandTotal,
+        JSON.stringify({
+          packing_percent, additional_discount, taxable_value: extraTaxable,
+          apply_processing_fee, apply_cgst, apply_sgst, apply_igst
+        }),
+        id
       ]
     );
 
-    // Mark challan as converted
-    await client.query(
-      'UPDATE delivery SET converted_to_bill = TRUE WHERE id = $1',
-      [id]
-    );
+    const pdfBuffer = await generatePDFBuffer({
+      bill_number: 'UPDATED', // you can fetch real bill_number if needed
+      bill_date: new Date().toISOString().split('T')[0],
+      customer_name,
+      address,
+      gstin,
+      lr_number,
+      agent_name,
+      from: fromLoc,
+      to: toLoc,
+      through,
+      items: processedItems,
+      subtotal,
+      packingCharges,
+      packing_percent,
+      addlDiscountAmt: discountAmtTotal,
+      extraTaxable,
+      taxableAmount: netTaxable,
+      cgstAmt: cgst,
+      sgstAmt: sgst,
+      igstAmt: igst,
+      roundOff,
+      grandTotal,
+      totalCases,
+    });
+
+    const pdfBase64 = pdfBuffer.toString('base64');
 
     await client.query('COMMIT');
 
     res.json({
       success: true,
-      message: 'Challan successfully converted to Bill!',
-      bill_number,
+      message: 'Bill updated successfully',
+      bill_number: 'UPDATED', // fetch real if needed
+      pdfBase64: `data:application/pdf;base64,${pdfBase64}`
     });
-
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('Convert Challan → Bill Error:', err);
-    res.status(500).json({ 
-      success: false,
-      message: err.message || 'Failed to convert challan' 
-    });
+    console.error('Update Booking Error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Failed to update bill' });
   } finally {
     client.release();
   }

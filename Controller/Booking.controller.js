@@ -824,138 +824,228 @@ exports.editBooking = async (req, res) => {
 
 exports.deleteBooking = async (req, res) => {
   const client = await pool.connect();
-  const { id } = req.params;
 
   try {
+    const { id } = req.params;
+
     await client.query('BEGIN');
 
-    const bookingRes = await client.query(
-      'SELECT id, bill_number, items, customer_name FROM public.bookings WHERE id = $1 FOR UPDATE',
+    // ── 1. Load the booking ───────────────────────────────────────
+    const billRes = await client.query(
+      'SELECT * FROM public.bookings WHERE id = $1',
       [id]
     );
 
-    if (bookingRes.rows.length === 0) {
+    if (billRes.rows.length === 0) {
       await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: 'Bill not found' });
+      return res.status(404).json({ message: 'Booking not found' });
     }
 
-    const booking = bookingRes.rows[0];
-    const billNumber = booking.bill_number || `ID-${id}`;
-    const customerName = booking.customer_name || 'DELETED';
-    const itemsRaw = booking.items;
+    const bill = billRes.rows[0];
 
-    let parsedItems = [];
-    let restockCount = 0;
-    let skippedCount = 0;
-
-    if (itemsRaw) {
-      try {
-        const parsed = typeof itemsRaw === 'string' ? JSON.parse(itemsRaw) : itemsRaw;
-        if (Array.isArray(parsed)) {
-          parsedItems = parsed;
-        }
-      } catch (e) {
-        console.error('Parse failed during delete:', e.message);
-      }
+    // ── 2. Parse items ────────────────────────────────────────────
+    let items = [];
+    try {
+      items = typeof bill.items === 'string'
+        ? JSON.parse(bill.items)
+        : (Array.isArray(bill.items) ? bill.items : []);
+    } catch {
+      items = [];
     }
 
-    // Load godowns and create lookup map
-    const godownsRes = await client.query('SELECT id, name FROM public.godown');
-    const godownMap = {};
-    godownsRes.rows.forEach(g => {
-      godownMap[g.name.toUpperCase()] = g.id;
-      // Also support short codes / initials if you want
-    });
+    // ── 3. For each item: restore stock + remove history ──────────
+    for (const item of items) {
+      const { productname, brand, cases, godown } = item;
 
-    // Restock loop with history recording
-    for (const item of parsedItems) {
-      let { godown, cases, productname, id: stock_id } = item;
+      if (!productname || !cases || parseInt(cases) <= 0) continue;
 
-      if (!cases || cases <= 0 || !productname) {
-        skippedCount++;
-        continue;
-      }
+      const casesNum = parseInt(cases, 10);
+      const brandNormalized = (brand || '').trim().toLowerCase().replace(/\s+/g, '_');
+      let resolvedGodownId = null;
 
-      godown = (godown || '').trim().toUpperCase();
+      if (godown) {
+        const prefix = godown.trim().toLowerCase();
 
-      // Try to find godown_id — prefer exact match, fallback to any containing
-      let godownId = godownMap[godown];
-      if (!godownId) {
-        const fallback = godownsRes.rows.find(g => g.name.toUpperCase().includes(godown));
-        godownId = fallback?.id;
-      }
-
-      if (!godownId) {
-        skippedCount++;
-        console.log(`No godown matched for: ${godown}`);
-        continue;
-      }
-
-      // Prefer exact stock_id if available from the booking items
-      let targetStockId = stock_id;
-
-      if (!targetStockId) {
-        // Fallback: loose match by product name
-        const stockRes = await client.query(
-          `SELECT id FROM public.stock 
-           WHERE godown_id = $1 AND productname ILIKE $2 
+        const gd = await client.query(
+          `SELECT id, name FROM public.godown 
+           WHERE LOWER(name) LIKE $1 
+           ORDER BY LENGTH(name) ASC 
            LIMIT 1`,
-          [godownId, `%${productname.split(' ')[0]}%`]
+          [`${prefix}%`]
         );
-        targetStockId = stockRes.rows[0]?.id;
+
+        if (gd.rows.length > 0) {
+          resolvedGodownId = gd.rows[0].id;
+        } else {
+          console.warn(`[deleteBooking] No godown found starting`);
+        }
       }
 
-      if (!targetStockId) {
-        skippedCount++;
-        console.log(`No matching stock found for: ${productname} in godown ${godown}`);
+      // ── Find stock row ────────────────────────────────────────
+      let stockRow = null;
+
+      if (resolvedGodownId) {
+        // Try normalized brand first (how stock is stored)
+        let r = await client.query(
+          `SELECT id, current_cases, taken_cases
+           FROM public.stock
+           WHERE godown_id          = $1
+             AND LOWER(productname) = LOWER($2)
+             AND brand              = $3`,
+          [resolvedGodownId, productname, brandNormalized]
+        );
+
+        // Fallback: LOWER match on brand
+        if (r.rows.length === 0) {
+          r = await client.query(
+            `SELECT id, current_cases, taken_cases
+             FROM public.stock
+             WHERE godown_id          = $1
+               AND LOWER(productname) = LOWER($2)
+               AND LOWER(brand)       = LOWER($3)`,
+            [resolvedGodownId, productname, brand || '']
+          );
+        }
+
+        if (r.rows.length > 0) stockRow = r.rows[0];
+      }
+
+      // Final fallback: any godown, most recently taken
+      if (!stockRow) {
+        const r = await client.query(
+          `SELECT id, current_cases, taken_cases
+           FROM public.stock
+           WHERE LOWER(productname) = LOWER($1)
+             AND (brand = $2 OR LOWER(brand) = LOWER($3))
+           ORDER BY last_taken_date DESC NULLS LAST
+           LIMIT 1`,
+          [productname, brandNormalized, brand || '']
+        );
+        if (r.rows.length > 0) {
+          stockRow = r.rows[0];
+          console.warn(`[deleteBooking] Used cross-godown fallback for: ${productname}`);
+        }
+      }
+
+      if (!stockRow) {
+        console.warn(`[deleteBooking] No stock row found for: ${productname} / ${brand}`);
         continue;
       }
 
-      // Restock
+      console.log(
+        `[deleteBooking] stock_id=${stockRow.id} | ${productname} | ` +
+        `current_cases: ${stockRow.current_cases} → ${stockRow.current_cases + casesNum}`
+      );
+
+      // ── Restore stock ─────────────────────────────────────────
       await client.query(
-        `UPDATE public.stock 
+        `UPDATE public.stock
          SET current_cases = current_cases + $1,
-             taken_cases = GREATEST(taken_cases - $1, 0)
+             taken_cases   = GREATEST(0, taken_cases - $1)
          WHERE id = $2`,
-        [cases, targetStockId]
+        [casesNum, stockRow.id]
+      );
+      
+      const customerName = bill.customer_name || null;
+
+      let delRes = await client.query(
+        `DELETE FROM public.stock_history
+         WHERE id = (
+           SELECT id FROM public.stock_history
+           WHERE stock_id      = $1
+             AND action        = 'taken'
+             AND cases         = $2
+             AND customer_name = $3
+           ORDER BY date DESC
+           LIMIT 1
+         )
+         RETURNING id`,
+        [stockRow.id, casesNum, customerName]
       );
 
-      // Record who returned the stock (deleted the bill)
-      await client.query(
-        `INSERT INTO public.stock_history 
-           (stock_id, action, cases, per_case_total, date, customer_name, added_by)
-         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, $5, $6)`,
-        [
-          targetStockId,
-          'added',
-          cases,
-          cases * (item.per_case || 1),
-          customerName || 'DELETED BILL',
-          'System-Delete'   // or pass from req.body.performed_by if you add it
-        ]
-      );
+      if (delRes.rows.length === 0) {
+        // Fallback: match without customer_name
+        delRes = await client.query(
+          `DELETE FROM public.stock_history
+           WHERE id = (
+             SELECT id FROM public.stock_history
+             WHERE stock_id = $1
+               AND action   = 'taken'
+               AND cases    = $2
+             ORDER BY date DESC
+             LIMIT 1
+           )
+           RETURNING id`,
+          [stockRow.id, casesNum]
+        );
+      }
 
-      restockCount++;
+      if (delRes.rows.length > 0) {
+        console.log(`[deleteBooking] Deleted history row `);
+      } else {
+        console.warn(`[deleteBooking] No history row found`);
+      }
     }
 
+    // ── 4. Delete the booking ─────────────────────────────────────
     await client.query('DELETE FROM public.bookings WHERE id = $1', [id]);
-    await client.query('COMMIT');
 
-    res.json({
-      success: true,
-      message: `Bill ${billNumber} deleted successfully`,
-      restocked: restockCount,
-      skipped: skippedCount,
-      details: restockCount > 0 ? 'Cases restored to stock' : 'No items could be restocked'
+    await client.query('COMMIT');
+    console.log(`[deleteBooking] Bill deleted successfully`);
+
+    return res.status(200).json({
+      message: 'Bill deleted and stock restored successfully.',
     });
 
   } catch (err) {
     await client.query('ROLLBACK');
-    console.error('[DELETE BOOKING ERROR]', err.stack || err.message);
-    res.status(500).json({ success: false, message: err.message || 'Failed to delete booking' });
+    console.error('deleteBooking error:', err);
+    return res.status(500).json({
+      message: 'Failed to delete bill',
+      error: err.message,
+    });
   } finally {
     client.release();
   }
+};
+
+exports.debugDelete = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const billRes = await pool.query('SELECT items FROM public.bookings WHERE id = $1', [id]);
+    if (billRes.rows.length === 0) return res.json({ error: 'Booking not found' });
+
+    const items = typeof billRes.rows[0].items === 'string'
+      ? JSON.parse(billRes.rows[0].items) : billRes.rows[0].items;
+
+    const godowns = await pool.query('SELECT id, name FROM public.godown ORDER BY id');
+
+    const historyInfo = [];
+    for (const item of items) {
+      const stockRes = await pool.query(
+        `SELECT id, godown_id, productname, brand, current_cases, taken_cases
+         FROM public.stock WHERE LOWER(productname) = LOWER($1) AND LOWER(brand) = LOWER($2)`,
+        [item.productname, item.brand || '']
+      );
+      for (const stock of stockRes.rows) {
+        const hist = await pool.query(
+          `SELECT id, action, cases, date, customer_name FROM public.stock_history
+           WHERE stock_id = $1 ORDER BY date DESC LIMIT 10`,
+          [stock.id]
+        );
+        historyInfo.push({
+          item_productname: item.productname,
+          item_cases: item.cases,
+          item_godown: item.godown,
+          stock_id: stock.id,
+          stock_godown_id: stock.godown_id,
+          stock_current_cases: stock.current_cases,
+          recent_history: hist.rows,
+        });
+      }
+    }
+    res.json({ booking_items: items, all_godowns: godowns.rows, stock_and_history: historyInfo });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
 exports.getBookingById = async (req, res) => {

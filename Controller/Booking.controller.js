@@ -13,29 +13,62 @@ const pool = new Pool({
 const formatDate = (dateInput) => {
   if (!dateInput) return '—';
 
-  let date;
-
   if (typeof dateInput === 'string') {
-    // Assume YYYY-MM-DD format
-    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
-      const [y, m, d] = dateInput.split('-');
+    const trimmed = dateInput.trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+      const [y, m, d] = trimmed.split('T')[0].split('-');
       return `${d}/${m}/${y}`;
     }
-    // Try parsing anyway
-    date = new Date(dateInput);
-  } else if (dateInput instanceof Date) {
-    date = dateInput;
-  } else {
-    return 'Invalid';
   }
 
-  if (isNaN(date?.getTime())) return 'Invalid Date';
+  try {
+    const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+    if (isNaN(date.getTime())) return 'Invalid Date';
+    return new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric'
+    }).format(date);
+  } catch {
+    return 'Invalid Date';
+  }
+};
 
-  const d = String(date.getDate()).padStart(2, '0');
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const y = date.getFullYear();
+const getIndianDateString = () => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(new Date());
+    const year = parts.find(p => p.type === 'year').value;
+    const month = parts.find(p => p.type === 'month').value;
+    const day = parts.find(p => p.type === 'day').value;
+    return `${year}-${month}-${day}`;
+  } catch {
+    const d = new Date();
+    const utc = d.getTime() + (d.getTimezoneOffset() * 60000);
+    const ist = new Date(utc + (3600000 * 5.5));
+    const year = ist.getFullYear();
+    const month = String(ist.getMonth() + 1).padStart(2, '0');
+    const day = String(ist.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+};
 
-  return `${d}/${m}/${y}`;
+const formatBrand = (str) => {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .replace(/_/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map(w => {
+      if (w.length <= 3 && w === w.toUpperCase()) return w;
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(' ');
 };
 
 const generatePDFBuffer = (data) => {
@@ -88,7 +121,7 @@ const generatePDFBuffer = (data) => {
     const rightX = 350;
     const tableStartX = leftX;
     const tableWidth = 490;
-    const colWidths = [35, 130, 45, 45, 55, 65, 65, 50];
+    const colWidths = [30, 150, 40, 40, 50, 60, 70, 50];
     const rowHeight = 20;
     const cellPadding = 4;
     const startY = 100;
@@ -137,10 +170,17 @@ const generatePDFBuffer = (data) => {
       const rate = parseFloat(item.rate_per_box) || 0;
       const amount = parseFloat(item.amount) || 0;
 
+      const rawBrand = item.brand || item.brand_name || item.company || item.company_name || '';
+      const brandFormatted = formatBrand(rawBrand);
+      let productDisplayName = (item.productname || '').trim();
+      if (brandFormatted && !productDisplayName.toLowerCase().includes(`(${brandFormatted.toLowerCase()})`)) {
+        productDisplayName = `${productDisplayName} (${brandFormatted})`;
+      }
+
       // ─── IMPORTANT: EXACT COLUMN ORDER ─────────────────────────────
       const row = [
         (item.s_no || '').toString(),           // S.No
-        item.productname || '',                 // Product
+        productDisplayName,                     // Product with (Brand)
         (item.cases || 0).toString(),           // Case
         (item.per_case || 1).toString(),        // Per
         (item.quantity || 0).toString(),        // Qty
@@ -150,8 +190,12 @@ const generatePDFBuffer = (data) => {
       ];
       // ──────────────────────────────────────────────────────────────
 
+      const productColWidth = colWidths[1] - 2 * cellPadding;
+      const textHeight = doc.heightOfString(productDisplayName, { width: productColWidth });
+      const currentRowHeight = Math.max(rowHeight, Math.ceil(textHeight) + cellPadding * 2);
+
       const rowTop = y;
-      const rowBottom = y + rowHeight;
+      const rowBottom = y + currentRowHeight;
       doc.lineWidth(0.4).strokeColor('black');
       doc.moveTo(tableStartX, rowTop).lineTo(tableStartX + tableWidth, rowTop).stroke();
       doc.moveTo(tableStartX, rowBottom).lineTo(tableStartX + tableWidth, rowBottom).stroke();
@@ -165,7 +209,7 @@ const generatePDFBuffer = (data) => {
         x += colWidths[i];
       });
 
-      y += rowHeight + 1;
+      y += currentRowHeight + 1;
     });
 
     doc.lineWidth(0.8).moveTo(tableStartX, y - 1).lineTo(tableStartX + tableWidth, y - 1).stroke();
@@ -226,6 +270,7 @@ exports.createBooking = async (req, res) => {
   const client = await pool.connect();
   try {
     const {
+      bill_date: custom_bill_date,
       customer_name,
       address,
       gstin,
@@ -296,7 +341,9 @@ exports.createBooking = async (req, res) => {
 
     const sequenceNumber = await getNextSequenceNumber();
     const bill_number = `BILL-${sequenceNumber}`;
-    const bill_date = new Date().toISOString().split('T')[0];
+    const bill_date = (custom_bill_date && /^\d{4}-\d{2}-\d{2}$/.test(custom_bill_date.toString().trim()))
+      ? custom_bill_date.toString().trim()
+      : getIndianDateString();
 
     let subtotal = 0;
     let totalCases = 0;
@@ -318,14 +365,19 @@ exports.createBooking = async (req, res) => {
         throw new Error(`Invalid item at index ${idx}`);
       }
 
+      let itemBrand = brand?.trim() || '';
+
       // Deduct stock only for direct bills (not from challan — already deducted)
       if (!from_challan) {
         const stockRes = await client.query(
-          'SELECT current_cases FROM public.stock WHERE id = $1 FOR UPDATE',
+          'SELECT current_cases, brand FROM public.stock WHERE id = $1 FOR UPDATE',
           [stock_id]
         );
         if (stockRes.rows.length === 0 || cases > stockRes.rows[0].current_cases) {
           throw new Error(`Insufficient stock for ${productname}`);
+        }
+        if (!itemBrand && stockRes.rows[0]?.brand) {
+          itemBrand = stockRes.rows[0].brand.trim();
         }
         await client.query(
           'UPDATE public.stock SET current_cases = current_cases - $1, taken_cases = taken_cases + $1 WHERE id = $2',
@@ -360,7 +412,7 @@ exports.createBooking = async (req, res) => {
       processedItems.push({
         s_no: idx + 1,
         productname: productname.trim(),
-        brand: brand?.trim() || '',
+        brand: itemBrand,
         cases: Number(cases),
         per_case: Number(per_case),
         quantity: qty,
@@ -391,8 +443,8 @@ exports.createBooking = async (req, res) => {
     await client.query(
       `INSERT INTO public.bookings (
         bill_number, bill_date, customer_name, address, gstin, lr_number, agent_name,
-        "from", "to", "through", stock_from, items, total, extra_charges, from_challan
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+        "from", "to", "through", stock_from, items, total, extra_charges, from_challan, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, CURRENT_TIMESTAMP)`,
       [
         bill_number, bill_date, finalCustomerName, finalAddress, finalGstin, finalLrNumber,
         agent_name, finalFrom, finalTo, finalThrough, stock_from || finalFrom,
@@ -473,6 +525,21 @@ exports.getBookingPDF = async (req, res) => {
       ? JSON.parse(booking.items || '[]') 
       : (Array.isArray(booking.items) ? booking.items : []);
 
+    // Ensure brand is populated for items if missing
+    for (const it of items) {
+      if (!it.brand && it.productname) {
+        try {
+          const sRes = await pool.query(
+            "SELECT brand FROM public.stock WHERE LOWER(productname) = LOWER($1) AND brand IS NOT NULL AND brand != '' LIMIT 1",
+            [it.productname.trim()]
+          );
+          if (sRes.rows.length > 0 && sRes.rows[0].brand) {
+            it.brand = sRes.rows[0].brand;
+          }
+        } catch (_) {}
+      }
+    }
+
     const extra = typeof booking.extra_charges === 'string' 
       ? JSON.parse(booking.extra_charges || '{}') 
       : (booking.extra_charges || {});
@@ -551,7 +618,7 @@ exports.getBookings = async (req, res) => {
         "from", "to", through, lr_number,
         items, created_at
       FROM public.bookings 
-      ORDER BY created_at DESC
+      ORDER BY id DESC
     `);
     res.json(result.rows);
   } catch (err) {
@@ -1167,12 +1234,16 @@ exports.updateBooking = async (req, res) => {
     const grandTotal = Math.round(netTaxable + totalTax);
     const roundOff = grandTotal - (netTaxable + totalTax);
 
+    const origBill = await client.query('SELECT bill_number, bill_date FROM public.bookings WHERE id = $1', [id]);
+    const bill_number = origBill.rows[0]?.bill_number || 'UPDATED';
+    const bill_date = req.body.bill_date || origBill.rows[0]?.bill_date || getIndianDateString();
+
     await client.query(
       `UPDATE public.bookings SET
         customer_name = $1, address = $2, gstin = $3, lr_number = $4, agent_name = $5,
         "from" = $6, "to" = $7, "through" = $8, stock_from = $9, items = $10,
-        total = $11, extra_charges = $12
-      WHERE id = $13`,
+        total = $11, extra_charges = $12, bill_date = $13
+      WHERE id = $14`,
       [
         customer_name, address || '', gstin || '', lr_number || '',
         agent_name, fromLoc, toLoc, through, stock_from || fromLoc,
@@ -1181,13 +1252,14 @@ exports.updateBooking = async (req, res) => {
           packing_percent, additional_discount, taxable_value: extraTaxable,
           apply_processing_fee, apply_cgst, apply_sgst, apply_igst
         }),
+        bill_date,
         id
       ]
     );
 
     const pdfBuffer = await generatePDFBuffer({
-      bill_number: 'UPDATED', // you can fetch real bill_number if needed
-      bill_date: new Date().toISOString().split('T')[0],
+      bill_number,
+      bill_date,
       customer_name,
       address,
       gstin,
@@ -1218,7 +1290,7 @@ exports.updateBooking = async (req, res) => {
     res.json({
       success: true,
       message: 'Bill updated successfully',
-      bill_number: 'UPDATED', // fetch real if needed
+      bill_number,
       pdfBase64: `data:application/pdf;base64,${pdfBase64}`
     });
   } catch (err) {

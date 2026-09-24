@@ -118,7 +118,8 @@ exports.createBooking = async (req, res) => {
       net_amount = 0,
       bill_no: providedBillNo = '',
       company_name = 'NISHA TRADERS',
-      bill_type = 'tax'  // ← NEW: 'tax' or 'supply'
+      bill_type = 'tax',  // ← NEW: 'tax' or 'supply'
+      bill_date
     } = req.body || {};
 
     if (!customer_name || !items) {
@@ -169,7 +170,7 @@ exports.createBooking = async (req, res) => {
         extra_amount, cgst_amount, sgst_amount, igst_amount, net_amount, items, company_name,
         type, created_at
       ) VALUES (
-        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW()
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, COALESCE($20::timestamp, NOW())
       )
       RETURNING id, bill_no, created_at, type
     `;
@@ -180,7 +181,8 @@ exports.createBooking = async (req, res) => {
       parseFloat(subtotal), parseFloat(packing_amount), parseFloat(extra_amount),
       parseFloat(cgst_amount), parseFloat(sgst_amount), parseFloat(igst_amount),
       parseFloat(net_amount), JSON.stringify(itemsArray), company_name,
-      bill_type.trim().toLowerCase()  // ← Save 'tax' or 'supply'
+      bill_type.trim().toLowerCase(),  // ← Save 'tax' or 'supply'
+      bill_date ? `${bill_date} 12:00:00` : null
     ];
 
     const result = await client.query(insertQuery, values);
@@ -210,7 +212,7 @@ exports.getAllBookings = async (req, res) => {
         subtotal, packing_amount, extra_amount, cgst_amount, sgst_amount,
         igst_amount, net_amount, items, company_name, type, created_at
       FROM public.billings
-      ORDER BY created_at DESC
+      ORDER BY id DESC
     `);
     res.json(result.rows);
   } catch (err) {
